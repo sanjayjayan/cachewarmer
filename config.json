@@ -1,9 +1,0 @@
-{
-    "real_debrid_api_key": "YOUR_REAL_DEBRID_API_KEY",
-    "omdb_api_key": "YOUR_OMDB_API_KEY",
-    "delay_between_movies": 5,
-    "min_seeders": 5,
-    "min_resolution": 720,
-    "max_per_quality": 2,
-    "allow_packs_fallback": true
-}
