@@ -5,7 +5,14 @@ import os
 import threading
 import sys
 import traceback
+import webbrowser
+import ctypes
 
+try:
+    # Fix for Windows Taskbar Icon
+    ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("cachewarmer.app.v1")
+except Exception:
+    pass
 
 
 # Wrap everything in try-except to catch initialization errors
@@ -41,8 +48,8 @@ class ToolTip:
         widget.bind("<Leave>", self.hide)
 
     def show(self, event=None):
-        x = self.widget.winfo_rootx() + 20
-        y = self.widget.winfo_rooty() + 20
+        x = self.widget.winfo_rootx()
+        y = self.widget.winfo_rooty() + self.widget.winfo_height() + 5
         self.tip = tk.Toplevel(self.widget)
         self.tip.wm_overrideredirect(True)
         self.tip.wm_geometry(f"+{x}+{y}")
@@ -51,7 +58,8 @@ class ToolTip:
             text=self.text,
             background="#ffffe0",
             relief="solid",
-            borderwidth=1
+            borderwidth=1,
+            justify=tk.LEFT
         ).pack()
 
     def hide(self, event=None):
@@ -93,6 +101,8 @@ def save_config(cfg):
 
 config = load_config()
 
+
+
 # -------------------------
 # Window
 # -------------------------
@@ -104,12 +114,12 @@ if os.path.exists("cloud.ico"):
         root.iconbitmap("cloud.ico")
     except Exception:
         pass
-root.minsize(560, 600)
+root.minsize(560, 700)
 
 # Center window on screen (cross-platform)
 root.update_idletasks()
-width = 560
-height = 680
+width = 600
+height = 800
 x = (root.winfo_screenwidth() // 2) - (width // 2)
 y = (root.winfo_screenheight() // 2) - (height // 2)
 root.geometry(f'{width}x{height}+{x}+{y}')
@@ -179,6 +189,48 @@ repeat_minutes_entry.insert(0, str(config.get("repeat_minutes", 60)))
 row += 1
 
 # -------------------------
+# TMDB Discover+ Addon
+# -------------------------
+
+tk.Label(main, text="TMDB Discover+ Base URLs\n(Click to open / Right-click copy)").grid(row=row, column=0, sticky="nw")
+link_frame = tk.Frame(main)
+link_frame.grid(row=row, column=1, sticky="w")
+
+def open_url(url):
+    webbrowser.open(url)
+
+def copy_url(url):
+    root.clipboard_clear()
+    root.clipboard_append(url)
+    root.update()
+    messagebox.showinfo("Copied", "URL copied to clipboard!")
+
+def make_link_label(parent, text, url):
+    lbl = tk.Label(parent, text=text, fg="blue", cursor="hand2", font=("TkDefaultFont", 9, "underline"))
+    lbl.bind("<Button-1>", lambda e: open_url(url))
+    lbl.bind("<Button-3>", lambda e: copy_url(url))
+    return lbl
+
+link1 = make_link_label(link_frame, "Link 1: baby-beamup.club", "https://84f50d1c22e7-tmdb-discover-plus.baby-beamup.club/")
+link1.pack(anchor="w")
+
+link2 = make_link_label(link_frame, "Link 2: ElfHosted", "https://tmdb-discover-plus.elfhosted.com/")
+link2.pack(anchor="w")
+row += 1
+
+tk.Label(main, text="TMDB Discover+ Manifest URL").grid(row=row, column=0, sticky="nw")
+tmdb_manifest_text = tk.Text(main, height=4, width=50)
+tmdb_manifest_text.grid(row=row, column=1, columnspan=2, sticky="ew", pady=2)
+tmdb_manifest_text.insert("1.0", config.get("tmdb_manifest_url", ""))
+row += 1
+
+tk.Label(main, text="TMDB Catalog Pages to Fetch").grid(row=row, column=0, sticky="w")
+tmdb_pages_entry = tk.Entry(main, width=10)
+tmdb_pages_entry.grid(row=row, column=1, sticky="w")
+tmdb_pages_entry.insert(0, str(config.get("tmdb_catalog_pages", 5)))
+row += 1
+
+# -------------------------
 # IMDb List URL(s)
 # -------------------------
 
@@ -214,6 +266,10 @@ def save_clicked():
         repeat_m = int(repeat_minutes_entry.get())
     except (ValueError, TypeError):
         repeat_m = 60
+    try:
+        tmdb_pages = int(tmdb_pages_entry.get())
+    except (ValueError, TypeError):
+        tmdb_pages = 5
     cfg = {
         "real_debrid_api_key": api_entry.get().strip(),
         "delay_between_movies": int(delay_entry.get()),
@@ -223,6 +279,8 @@ def save_clicked():
         "allow_packs_fallback": pack_var.get(),
         "run_mode": RUN_MODE_VALUES.get(run_mode_var.get(), "oneshot"),
         "repeat_minutes": repeat_m,
+        "tmdb_manifest_url": tmdb_manifest_text.get("1.0", tk.END).strip(),
+        "tmdb_catalog_pages": tmdb_pages,
     }
 
     save_config(cfg)
@@ -240,10 +298,11 @@ def start_clicked():
     imdb_urls = imdb_urls_text.get("1.0", tk.END).strip()
     movies = movies_text.get("1.0", tk.END).strip()
     series = series_text.get("1.0", tk.END).strip()
+    tmdb_manifest_url = tmdb_manifest_text.get("1.0", tk.END).strip()
 
     # Validate Inputs
-    if not imdb_urls and not movies and not series:
-        messagebox.showerror("Error", "Please provide at least one input:\n- IMDb List URL\n- Movie ID/Title\n- Series ID/URL")
+    if not imdb_urls and not movies and not series and not tmdb_manifest_url:
+        messagebox.showerror("Error", "Please provide at least one input:\n- TMDB Discover+ Manifest URL\n- IMDb List URL\n- Movie ID/Title\n- Series ID/URL")
         return
 
     # Cross-validation: IDs in URL box?
@@ -267,14 +326,71 @@ def start_clicked():
         repeat_m = int(repeat_minutes_entry.get())
     except (ValueError, TypeError):
         repeat_m = 60
+    try:
+        tmdb_pages = int(tmdb_pages_entry.get())
+    except (ValueError, TypeError):
+        tmdb_pages = 5
     messagebox.showinfo("Started", "Cache Warmer running in background.")
+    
+    # Helper for catalog selection on main thread
+    def select_catalog_ui(catalogs):
+        import queue
+        q = queue.Queue()
+        
+        def ask():
+            try:
+                # Create a top-level window for selection
+                top = tk.Toplevel(root)
+                top.title("Select Catalog")
+                top.geometry("400x300")
+                
+                # Center it
+                x = root.winfo_x() + (root.winfo_width() // 2) - 200
+                y = root.winfo_y() + (root.winfo_height() // 2) - 150
+                top.geometry(f"+{x}+{y}")
+                top.grab_set() # Modal
+                
+                tk.Label(top, text="Please select a catalog to fetch:", font=("Arial", 10, "bold")).pack(pady=10)
+                
+                lb = tk.Listbox(top, selectmode=tk.SINGLE, width=50, height=10)
+                lb.pack(pady=5, padx=10, fill=tk.BOTH, expand=True)
+                
+                for cat in catalogs:
+                    name = cat.get("name", "Unknown")
+                    cat_id = cat.get("id", "")
+                    cat_type = cat.get("type", "")
+                    lb.insert(tk.END, f"{name} ({cat_type}) - {cat_id}")
+                
+                def on_select():
+                    sel = lb.curselection()
+                    if not sel:
+                        return
+                    idx = sel[0]
+                    q.put(catalogs[idx])
+                    top.destroy()
+                
+                tk.Button(top, text="Select", command=on_select).pack(pady=10)
+                top.protocol("WM_DELETE_WINDOW", lambda: (q.put(None), top.destroy()))
+                
+                top.wait_window()
+            except Exception as e:
+                print(f"Error in selection UI: {e}")
+                q.put(None)
+
+        root.after(0, ask)
+        # Block background thread until user selects
+        return q.get()
+
     kwargs = {
         "imdb_list_urls": imdb_urls or None,
         "movies": movies or None,
         "series_list": series or None,
+        "tmdb_manifest_url": tmdb_manifest_url or None,
+        "tmdb_catalog_pages": tmdb_pages,
         "run_mode": RUN_MODE_VALUES.get(run_mode_var.get(), "oneshot"),
         "repeat_minutes": repeat_m,
         "api_key": api_key,
+        "select_catalog_func": select_catalog_ui,
     }
 
     start_btn.config(state="disabled")
@@ -287,6 +403,7 @@ def start_clicked():
             root.after(0, lambda: start_btn.config(state="normal"))
 
     threading.Thread(target=run_wrapper, daemon=True).start()
+
 
 def stop_clicked():
     request_stop()
@@ -302,6 +419,7 @@ btn_inner.grid(row=0, column=1)
 tk.Button(btn_inner, text="Save Settings", command=save_clicked).pack(side=tk.LEFT, padx=6)
 start_btn = tk.Button(btn_inner, text="Start Cache Warmer", command=start_clicked)
 start_btn.pack(side=tk.LEFT, padx=6)
+
 tk.Button(btn_inner, text="Stop", command=stop_clicked).pack(side=tk.LEFT, padx=6)
 row += 1
 
@@ -309,7 +427,7 @@ row += 1
 # Logs
 # -------------------------
 
-log_box = tk.Text(main, height=9, width=70)
+log_box = tk.Text(main, height=15, width=70)
 log_box.grid(row=row, column=0, columnspan=3, pady=(10, 20), sticky="nsew")
 main.rowconfigure(row, weight=1)
 
@@ -328,6 +446,10 @@ ToolTip(maxpq_entry, "How many torrents per quality")
 ToolTip(pack_check, "Allow pack torrents if no singles exist")
 ToolTip(run_mode_menu, "One-shot: run once and exit. Loop: repeat forever. Interval: run once, wait X min, repeat.")
 ToolTip(repeat_minutes_entry, "Minutes to wait between runs when Run mode is 'interval'")
+ToolTip(link1, "https://84f50d1c22e7-tmdb-discover-plus.baby-beamup.club/")
+ToolTip(link2, "https://tmdb-discover-plus.elfhosted.com/")
+ToolTip(tmdb_manifest_text, "Paste TMDB Discover+ manifest URL (e.g. https://addon.example.com/manifest.json)")
+ToolTip(tmdb_pages_entry, "Number of catalog pages to fetch (each page ~20 items, default: 5 pages = ~100 items)")
 ToolTip(imdb_urls_text, "Paste one or more IMDb list URLs (e.g. https://www.imdb.com/list/ls091520106/) — one per line")
 ToolTip(movies_text, "Paste IMDb IDs (tt...) or titles — one per line; combined with lists above")
 ToolTip(series_text, "Paste series IMDb IDs or URLs (e.g. tt0944947 or https://www.imdb.com/title/tt0944947/) — one per line; caches all seasons & episodes")
@@ -426,6 +548,7 @@ if TRAY_AVAILABLE:
     # <Iconify> binding removed as it causes crashes on Windows
 
 _setup_tray()
+
 
 try:
     root.mainloop()

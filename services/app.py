@@ -14,6 +14,7 @@ import time
 from services.imdb_search import search_imdb_id
 from services.imdb_list_titles import extract_imdb_ids_from_list, extract_titles_from_list
 from services.imdb_series_episodes import get_all_episodes, get_series_id
+from services.stremio_addon import extract_catalog_ids
 import ctypes
 import os
 import gc
@@ -38,17 +39,20 @@ STOP_REQUESTED = False
 # Tray tooltip state (read by ui.py)
 TRAY_RUNNING = False
 TRAY_CURRENT_ITEM = ""
-APP_VERSION = "0.2.0"
+APP_VERSION = "0.2.1"
 
 
-def start_app(imdb_list_urls=None, movies=None, series_list=None, run_mode=None, repeat_minutes=None, api_key=None):
+def start_app(imdb_list_urls=None, movies=None, series_list=None, tmdb_manifest_url=None, tmdb_catalog_pages=None, run_mode=None, repeat_minutes=None, api_key=None, select_catalog_func=None):
     """
     imdb_list_urls: list of IMDb list URLs (or None)
     movies: list of IMDb IDs or movie titles, one per line (or None)
     series_list: list of IMDb series IDs or series URLs, one per line (or None)
+    tmdb_manifest_url: TMDB Discover+ manifest URL (or None)
+    tmdb_catalog_pages: Number of pages to fetch (or None)
     run_mode: "oneshot" (default), "loop", or "interval"
     repeat_minutes: used when run_mode == "interval"
     api_key: Real-Debrid API Key (overrides config)
+    select_catalog_func: Function to select catalog if multiple exist
     """
     init_db()
     set_low_priority() # Optimize thread priority for background usage
@@ -90,6 +94,8 @@ def start_app(imdb_list_urls=None, movies=None, series_list=None, run_mode=None,
     if imdb_list_urls is not None:
         urls = imdb_list_urls if isinstance(imdb_list_urls, list) else [u.strip() for u in imdb_list_urls.strip().splitlines() if u.strip()]
         for url in urls:
+            if STOP_REQUESTED:
+                break
             print("[INFO] Reading IMDb list:", url)
             ids = extract_imdb_ids_from_list(url)
             if ids:
@@ -99,10 +105,31 @@ def start_app(imdb_list_urls=None, movies=None, series_list=None, run_mode=None,
                 titles = extract_titles_from_list(url)
                 print(f"[INFO] Found titles (fallback): {len(titles)}")
                 for title in titles:
+                    if STOP_REQUESTED:
+                        break
                     imdb = search_imdb_id(title)
                     if imdb:
                         imdb_list.append(imdb)
                     time.sleep(0.1)
+
+    # TMDB Discover+ Addon
+    if tmdb_manifest_url is not None and tmdb_manifest_url.strip():
+        if STOP_REQUESTED:
+            pass
+        else:
+            print("[INFO] Reading TMDB Discover+ addon catalog:", tmdb_manifest_url)
+            pages = 5
+            try:
+                pages = int(tmdb_catalog_pages) if tmdb_catalog_pages is not None else 5
+            except ValueError:
+                pages = 5
+            
+            addon_ids = extract_catalog_ids(tmdb_manifest_url, max_pages=pages, stop_check=lambda: STOP_REQUESTED, select_catalog_func=select_catalog_func)
+            if addon_ids:
+                print(f"[INFO] Found {len(addon_ids)} IDs from TMDB addon")
+                imdb_list.extend(addon_ids)
+            else:
+                print("[WARN] No IDs found from TMDB addon (or stopped)")
 
     imdb_list = list(set(imdb_list))
 
